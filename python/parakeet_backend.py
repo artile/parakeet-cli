@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import inspect
 import json
 import os
 import re
@@ -13,6 +14,26 @@ import torch
 from rapidfuzz import fuzz, process
 
 import nemo.collections.asr as nemo_asr
+
+
+def patch_sampler_compat() -> None:
+    """
+    Lhotse in current NeMo path passes `data_source` into torch Sampler.__init__.
+    Newer torch variants may reject that argument, so we ignore it safely.
+    """
+    from torch.utils.data import Sampler
+
+    signature = inspect.signature(Sampler.__init__)
+    if "data_source" in signature.parameters:
+        return
+
+    original_init = Sampler.__init__
+
+    def _compat_init(self, *args, **kwargs):
+        kwargs.pop("data_source", None)
+        return original_init(self)
+
+    Sampler.__init__ = _compat_init
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,6 +162,7 @@ def to_markdown(text: str, source: Path, model_name: str, device: str) -> str:
 
 
 def transcribe(req: dict[str, Any]) -> dict[str, Any]:
+    patch_sampler_compat()
     parakeet_home = Path(os.environ.get("PARAKEET_HOME", "/root/.parakeet")).resolve()
     ensure_runtime_dirs(parakeet_home)
 
@@ -170,11 +192,17 @@ def transcribe(req: dict[str, Any]) -> dict[str, Any]:
         model = nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
         model = model.to(torch.device(device))
 
-        # Keep API usage conservative for compatibility across NeMo versions.
-        result = model.transcribe(paths2audio_files=[str(normalized)], batch_size=1)
+        # Support multiple NeMo transcribe() signatures across versions.
+        audio_list = [str(normalized)]
+        try:
+            result = model.transcribe(paths2audio_files=audio_list, batch_size=1, num_workers=0, verbose=False)
+        except TypeError:
+            result = model.transcribe(audio=audio_list, batch_size=1, num_workers=0, verbose=False)
         if not result:
             raise RuntimeError("empty transcription result")
-        text = str(result[0]).strip()
+
+        first = result[0]
+        text = first.text.strip() if hasattr(first, "text") else str(first).strip()
         text = apply_vocab_rules(text, vocab_terms, fuzzy_vocab)
 
         if timestamps:

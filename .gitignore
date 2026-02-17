@@ -3,6 +3,7 @@ target/
 .cache/
 tmp/
 output/
+fathom-test/
 *.wav
 *.mp3
 *.m4a

@@ -178,8 +178,13 @@ async fn main() -> Result<()> {
     }
 
     let stdout_text = stdout_lines.join("\n");
+    let json_line = stdout_text
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with('{'))
+        .ok_or_else(|| anyhow!("backend did not return JSON output"))?;
     let parsed: BackendResponse =
-        serde_json::from_str(stdout_text.trim()).context("failed to parse backend response JSON")?;
+        serde_json::from_str(json_line.trim()).context("failed to parse backend response JSON")?;
 
     match cli.emit {
         EmitMode::Text => {
