@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::{collections::BTreeSet, fs};
+use std::io::{BufRead, BufReader as StdBufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
@@ -39,6 +42,12 @@ struct Cli {
 
     #[arg(long, value_enum, default_value_t = EmitMode::Text)]
     emit: EmitMode,
+
+    #[arg(long, default_value = "/root/.parakeet/tmp/parakeet.sock")]
+    daemon_socket: PathBuf,
+
+    #[arg(long, default_value_t = false)]
+    no_daemon: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -74,6 +83,15 @@ struct BackendResponse {
     model: String,
     device: String,
     format: String,
+    metrics: Option<BackendMetrics>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct BackendMetrics {
+    model_load_sec: f64,
+    inference_sec: f64,
+    total_sec: f64,
+    audio_sec: Option<f64>,
 }
 
 #[tokio::main]
@@ -124,6 +142,13 @@ async fn main() -> Result<()> {
         verbose: cli.verbose,
     };
     let json = serde_json::to_string(&request).context("serialize backend request")?;
+
+    if !cli.no_daemon {
+        if let Ok(parsed) = try_daemon_request(&cli.daemon_socket, &json) {
+            emit_response(&cli, &parsed)?;
+            return Ok(());
+        }
+    }
 
     let mut cmd = Command::new(&venv_python);
     cmd.arg(&backend)
@@ -190,16 +215,53 @@ async fn main() -> Result<()> {
     let parsed: BackendResponse =
         serde_json::from_str(json_line.trim()).context("failed to parse backend response JSON")?;
 
+    emit_response(&cli, &parsed)?;
+
+    Ok(())
+}
+
+fn try_daemon_request(socket_path: &Path, request_json: &str) -> Result<BackendResponse> {
+    let mut stream = UnixStream::connect(socket_path)
+        .with_context(|| format!("daemon socket not reachable: {}", socket_path.display()))?;
+    stream.set_read_timeout(Some(Duration::from_secs(180)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    stream.write_all(request_json.as_bytes())?;
+    stream.write_all(b"\n")?;
+
+    let mut reader = StdBufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    if line.trim().is_empty() {
+        bail!("empty daemon response");
+    }
+    let parsed: BackendResponse =
+        serde_json::from_str(line.trim()).context("invalid daemon JSON response")?;
+    Ok(parsed)
+}
+
+fn emit_response(cli: &Cli, parsed: &BackendResponse) -> Result<()> {
     match cli.emit {
         EmitMode::Text => {
             println!("{}", parsed.transcript);
+            if cli.verbose {
+                if let Some(m) = &parsed.metrics {
+                    eprintln!(
+                        "[parakeet metrics] load={:.2}s infer={:.2}s total={:.2}s audio={}",
+                        m.model_load_sec,
+                        m.inference_sec,
+                        m.total_sec,
+                        m.audio_sec
+                            .map(|x| format!("{x:.2}s"))
+                            .unwrap_or_else(|| "n/a".to_string())
+                    );
+                }
+            }
         }
         EmitMode::Json => {
             let json = serde_json::to_string_pretty(&parsed).context("serialize output JSON")?;
             println!("{json}");
         }
     }
-
     Ok(())
 }
 

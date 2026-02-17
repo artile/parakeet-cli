@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import re
 import sqlite3
@@ -18,11 +19,24 @@ STOPWORDS = {
     "also", "just", "like", "very", "more", "some", "than", "here", "they", "them", "our", "out", "all",
     "що", "як", "це", "так", "але", "або", "для", "про", "його", "вона", "вони", "ми", "ви", "ти", "та",
     "мене", "тобі", "дуже", "тут", "коли", "тому", "якщо", "щоб", "й", "і", "таки", "type", "json", "http",
-    "none", "null", "true", "false"
+    "none", "null", "true", "false",
+    "есть", "просто", "сейчас", "можно", "когда", "надо", "может", "потом", "здесь",
+    "хорошо", "только", "больше", "очень", "короче", "right", "okay", "well", "please", "need",
+    "first", "other", "guys", "team", "create", "code", "link", "video", "audio", "something",
+    "send", "email", "think", "work", "check", "schedule", "time", "good", "unknown", "sure", "tenant", "tenants"
 }
 TEXT_EXTS = {".txt", ".md", ".json", ".log", ".csv", ".yaml", ".yml"}
 SKIP_DIRS = {".git", "target", "node_modules", ".venv", "__pycache__", "media", ".cache"}
 MAX_FILES_PER_DIR_SCAN = 8000
+BAD_SUBSTRINGS = {
+    "display_name",
+    "speaker_name",
+    "matched_calendar_invitee_email",
+    "recording_id",
+    "message_id",
+    "timestamp",
+    "critical_unblock",
+}
 
 
 @dataclass
@@ -60,7 +74,8 @@ def parse_args() -> argparse.Namespace:
     auto.add_argument("--config", default="/root/.parakeet/terms/sources.json")
 
     build = sub.add_parser("build-vocab", help="Build vocabulary files for ASR")
-    build.add_argument("--max-terms", type=int, default=5000)
+    build.add_argument("--max-terms", type=int, default=300)
+    build.add_argument("--min-count", type=int, default=2)
 
     stats = sub.add_parser("stats", help="Show terms library stats")
     stats.add_argument("--top", type=int, default=30)
@@ -153,11 +168,74 @@ def looks_vocab_candidate(tok: str) -> bool:
     k = key_for(t)
     if k in {"display_name", "matched_calendar_invitee_email", "speaker_name", "recording_id"}:
         return False
+    if any(x in k for x in BAD_SUBSTRINGS):
+        return False
     if len(t) < 4 and not t.isupper():
         return False
     if t.count("-") + t.count("_") > 2:
         return False
     return True
+
+
+def hard_term_score(stats: TermStats) -> float:
+    t = stats.term
+    words = t.split()
+    lower = t.lower()
+    has_digit = any(c.isdigit() for c in t)
+    has_sep = any(c in "-_/" for c in t)
+    has_mixed_case = any(c.islower() for c in t) and any(c.isupper() for c in t[1:])
+    is_acronym = t.isupper() and 2 <= len(t) <= 12
+    title_like = all(w and w[0].isupper() for w in words) and not t.isupper()
+    multi_word = 2 <= len(words) <= 4
+    non_ascii = any(ord(c) > 127 for c in t)
+    lowercase_single = len(words) == 1 and t.isalpha() and t == lower
+    latin_title_name = bool(re.fullmatch(r"[A-Z][A-Za-z'’-]{3,}", t))
+
+    # Hard-negative filters.
+    if len(t) > 48:
+        return -1.0
+    if len(words) > 4:
+        return -1.0
+    if any(x in lower for x in BAD_SUBSTRINGS):
+        return -1.0
+    if re.search(r"\.(com|net|org|us|io)$", lower):
+        return -1.0
+    if "@" in t or t.startswith("http"):
+        return -1.0
+    if re.fullmatch(r"[A-Za-z0-9+/=]{20,}", t):
+        return -1.0
+
+    feature = 0.0
+    if has_digit:
+        feature += 2.8
+    if has_sep:
+        feature += 1.6
+    if is_acronym:
+        feature += 2.2
+    if has_mixed_case:
+        feature += 2.0
+    if title_like:
+        feature += 1.8
+    if multi_word:
+        feature += 2.0
+    if non_ascii:
+        feature += 0.8
+
+    # Down-rank generic lowercase words heavily.
+    if lowercase_single:
+        feature -= 2.5
+
+    hard_marker = has_digit or has_sep or is_acronym or has_mixed_case or multi_word
+    if not hard_marker:
+        # Allow likely names, but reject generic sentence-start words.
+        if not (title_like and len(words) == 1 and latin_title_name and stats.count <= 3000):
+            return -1.0
+        if lower in STOPWORDS:
+            return -1.0
+
+    freq = math.log2(stats.count + 1.0)
+    channel_diversity = min(len(stats.channels), 3) * 0.25
+    return feature + freq + channel_diversity
 
 
 def extract_terms(text: str) -> list[str]:
@@ -328,7 +406,7 @@ def ingest_sqlite(lib: dict[str, TermStats], db_path: Path, channel: str) -> int
     return total
 
 
-def build_vocab(lib: dict[str, TermStats], max_terms: int) -> dict[str, Any]:
+def build_vocab(lib: dict[str, TermStats], max_terms: int, min_count: int) -> dict[str, Any]:
     manual_terms = []
     if manual_path().exists():
         manual_terms = [
@@ -336,8 +414,19 @@ def build_vocab(lib: dict[str, TermStats], max_terms: int) -> dict[str, Any]:
             if normalize_token(x) and not normalize_token(x).startswith("#")
         ]
 
-    ranked = sorted(lib.values(), key=lambda x: (x.count, x.last_seen), reverse=True)
-    auto_terms = [t.term for t in ranked if looks_vocab_candidate(t.term)][:max_terms]
+    scored: list[tuple[float, TermStats]] = []
+    for stats in lib.values():
+        if stats.count < min_count:
+            continue
+        if not looks_vocab_candidate(stats.term):
+            continue
+        score = hard_term_score(stats)
+        if score < 2.6:
+            continue
+        scored.append((score, stats))
+
+    scored.sort(key=lambda pair: (pair[0], pair[1].count, pair[1].last_seen), reverse=True)
+    auto_terms = [s.term for _, s in scored][:max_terms]
 
     auto_vocab_path().write_text("\n".join(auto_terms) + ("\n" if auto_terms else ""), encoding="utf-8")
 
@@ -354,6 +443,8 @@ def build_vocab(lib: dict[str, TermStats], max_terms: int) -> dict[str, Any]:
         "manual_terms": len(manual_terms),
         "auto_terms": len(auto_terms),
         "merged_terms": len(merged),
+        "min_count": min_count,
+        "max_terms": max_terms,
         "auto_vocab": str(auto_vocab_path()),
         "vocab": str(merged_vocab_path()),
     }
@@ -420,14 +511,14 @@ def main() -> int:
         return 0
 
     if args.cmd == "build-vocab":
-        result = build_vocab(lib, args.max_terms)
+        result = build_vocab(lib, args.max_terms, args.min_count)
         print(json.dumps({"event": "terms_build_vocab", **result, "total_terms": len(lib)}, ensure_ascii=False))
         return 0
 
     if args.cmd == "rebuild":
         added_map = ingest_auto(lib, terms_dir() / "sources.json")
         save_library(lib)
-        built = build_vocab(lib, 5000)
+        built = build_vocab(lib, 300, 2)
         print(json.dumps({"event": "terms_rebuild", "added_by_channel": added_map, **built, "total_terms": len(lib)}, ensure_ascii=False))
         return 0
 

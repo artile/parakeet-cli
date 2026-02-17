@@ -37,6 +37,19 @@ Machine-readable output for Rust/webhook integration:
   --emit json
 ```
 
+Low-latency mode for repeated transcriptions:
+
+```bash
+# start persistent model process once
+/root/.parakeet/scripts/parakeetd start
+
+# normal parakeet calls will auto-use daemon socket when available
+/root/.parakeet/scripts/parakeet --input /path/to/audio.wav --emit json
+
+# stop when done
+/root/.parakeet/scripts/parakeetd stop
+```
+
 Write markdown output file:
 
 ```bash
@@ -71,6 +84,7 @@ Sync terms library from channels and rebuild ASR vocabulary:
 - `--no-fuzzy-vocab`: disable fuzzy vocabulary correction
 - `--verbose`: print backend diagnostics
 - `--emit text|json`: stdout mode (default `text`)
+- `--no-daemon`: force one-shot backend (disable persistent daemon socket)
 
 ## Helper scripts
 
@@ -129,11 +143,19 @@ cat /tmp/message.txt | /root/.parakeet/scripts/terms ingest-stdin --channel tele
 
 # Show top learned terms
 /root/.parakeet/scripts/terms stats --top 50
+
+# Build stricter "hard terms" vocabulary (default: max 300, min count 2)
+/root/.parakeet/scripts/terms build-vocab --max-terms 300 --min-count 2
 ```
 
 Auto-usage in transcription:
 - If `/root/.parakeet/terms/vocab.txt` exists, `parakeet` automatically applies it.
 - If `--vocab` is provided, both vocab sources are merged for the run.
+
+Hard-term selection policy:
+- prioritizes names, product terms, acronyms, mixed-case tokens, versions, and short domain phrases
+- excludes metadata keys, domains/emails/URLs, and generic frequent lowercase words
+- requires recurrence (`--min-count`) unless manually curated in `terms/manual.txt`
 
 Future channels:
 - `gmail` is already present in `terms/sources.json` as disabled placeholder.
@@ -144,3 +166,4 @@ Future channels:
 - If the input is not a common audio extension, backend uses `ffmpeg` to convert it.
 - First run downloads model files, cached inside `/root/.parakeet/.cache`.
 - Install/run/write artifacts remain inside `/root/.parakeet` unless you pass external `--out` paths.
+- Bottleneck: one-shot runs reload the model every call; use `scripts/parakeetd` for low latency.

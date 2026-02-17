@@ -3,4 +3,4 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PARAKEET_HOME="$ROOT_DIR"
 "$ROOT_DIR/scripts/terms" ingest-auto --config "$ROOT_DIR/terms/sources.json"
-"$ROOT_DIR/scripts/terms" build-vocab --max-terms 5000
+"$ROOT_DIR/scripts/terms" build-vocab --max-terms 300 --min-count 2
