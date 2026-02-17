@@ -8,3 +8,5 @@ output/
 *.m4a
 *.flac
 *.ogg
+
+python/__pycache__/
