@@ -1,0 +1,6 @@
+# One term per line
+OpenClaw
+WA CLI
+Webhook CLI
+Parakeet
+Fathom
