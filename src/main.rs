@@ -35,12 +35,21 @@ struct Cli {
 
     #[arg(long, default_value_t = false)]
     verbose: bool,
+
+    #[arg(long, value_enum, default_value_t = EmitMode::Text)]
+    emit: EmitMode,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum OutputFormat {
     Text,
     Md,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum EmitMode {
+    Text,
+    Json,
 }
 
 #[derive(serde::Serialize)]
@@ -54,6 +63,16 @@ struct BackendRequest<'a> {
     timestamps: bool,
     fuzzy_vocab: bool,
     verbose: bool,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct BackendResponse {
+    transcript: String,
+    output_path: Option<String>,
+    source: String,
+    model: String,
+    device: String,
+    format: String,
 }
 
 #[tokio::main]
@@ -159,6 +178,18 @@ async fn main() -> Result<()> {
     }
 
     let stdout_text = stdout_lines.join("\n");
-    println!("{stdout_text}");
+    let parsed: BackendResponse =
+        serde_json::from_str(stdout_text.trim()).context("failed to parse backend response JSON")?;
+
+    match cli.emit {
+        EmitMode::Text => {
+            println!("{}", parsed.transcript);
+        }
+        EmitMode::Json => {
+            let json = serde_json::to_string_pretty(&parsed).context("serialize output JSON")?;
+            println!("{json}");
+        }
+    }
+
     Ok(())
 }

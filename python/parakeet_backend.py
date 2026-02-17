@@ -140,7 +140,7 @@ def to_markdown(text: str, source: Path, model_name: str, device: str) -> str:
     )
 
 
-def transcribe(req: dict[str, Any]) -> str:
+def transcribe(req: dict[str, Any]) -> dict[str, Any]:
     parakeet_home = Path(os.environ.get("PARAKEET_HOME", "/root/.parakeet")).resolve()
     ensure_runtime_dirs(parakeet_home)
 
@@ -185,18 +185,23 @@ def transcribe(req: dict[str, Any]) -> str:
         if output_path:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(final_text, encoding="utf-8")
-            print(final_text)
-        else:
-            print(final_text)
 
-    return "ok"
+    return {
+        "transcript": final_text,
+        "output_path": str(output_path) if output_path else None,
+        "source": str(input_path),
+        "model": model_name,
+        "device": device,
+        "format": output_format,
+    }
 
 
 def main() -> int:
     args = parse_args()
     try:
         req = read_request(args.json)
-        transcribe(req)
+        result = transcribe(req)
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     except Exception as exc:
         print(str(exc), file=sys.stderr)
