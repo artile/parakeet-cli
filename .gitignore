@@ -4,6 +4,10 @@ target/
 tmp/
 output/
 fathom-test/
+terms/library.json
+terms/vocab.auto.txt
+terms/vocab.txt
+tmp/merged_vocab.txt
 *.wav
 *.mp3
 *.m4a

@@ -1,0 +1,39 @@
+{
+  "channels": [
+    {
+      "name": "wacli",
+      "enabled": true,
+      "sqlite_paths": [
+        "/root/.wacli/wacli.db",
+        "/root/.wacli/session.db"
+      ],
+      "text_paths": [
+        "/root/.wacli/media"
+      ]
+    },
+    {
+      "name": "telegram",
+      "enabled": true,
+      "text_paths": [
+        "/root/.openclaw/telegram",
+        "/root/.openclaw/workspace/memory",
+        "/root/.openclaw/workspace/fathom-calls"
+      ]
+    },
+    {
+      "name": "openclaw",
+      "enabled": true,
+      "text_paths": [
+        "/root/.openclaw/workspace",
+        "/root/.openclaw/workspace-main"
+      ]
+    },
+    {
+      "name": "gmail",
+      "enabled": false,
+      "text_paths": [
+        "/root/.openclaw/gmail"
+      ]
+    }
+  ]
+}

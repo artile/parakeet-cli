@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::{collections::BTreeSet, fs};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
@@ -108,12 +109,15 @@ async fn main() -> Result<()> {
         .as_deref()
         .unwrap_or("nvidia/parakeet-tdt-0.6b-v3");
 
+    let merged_vocab_path = prepare_vocab_file(&root_dir, cli.vocab.as_deref())
+        .context("failed preparing vocabulary file")?;
+
     let request = BackendRequest {
         input: &cli.input,
         output: cli.out.as_deref(),
         model: model_name,
         device: &cli.device,
-        vocab: cli.vocab.as_deref(),
+        vocab: merged_vocab_path.as_deref(),
         format: output_format,
         timestamps: cli.timestamps,
         fuzzy_vocab: !cli.no_fuzzy_vocab,
@@ -197,4 +201,47 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn prepare_vocab_file(root_dir: &Path, user_vocab: Option<&Path>) -> Result<Option<PathBuf>> {
+    let mut vocab_files = Vec::new();
+    let auto_vocab = root_dir.join("terms/vocab.txt");
+    if auto_vocab.exists() {
+        vocab_files.push(auto_vocab);
+    }
+    if let Some(path) = user_vocab {
+        if !path.exists() {
+            bail!("vocab file does not exist: {}", path.display());
+        }
+        vocab_files.push(path.to_path_buf());
+    }
+    if vocab_files.is_empty() {
+        return Ok(None);
+    }
+
+    let mut merged = BTreeSet::new();
+    for file in vocab_files {
+        let content = fs::read_to_string(&file)
+            .with_context(|| format!("failed reading vocab: {}", file.display()))?;
+        for line in content.lines() {
+            let term = line.trim();
+            if term.is_empty() || term.starts_with('#') {
+                continue;
+            }
+            merged.insert(term.to_string());
+        }
+    }
+
+    let tmp_dir = root_dir.join("tmp");
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("failed creating tmp dir: {}", tmp_dir.display()))?;
+    let merged_path = tmp_dir.join("merged_vocab.txt");
+    let mut out = String::new();
+    for term in merged {
+        out.push_str(&term);
+        out.push('\n');
+    }
+    fs::write(&merged_path, out)
+        .with_context(|| format!("failed writing merged vocab: {}", merged_path.display()))?;
+    Ok(Some(merged_path))
 }
