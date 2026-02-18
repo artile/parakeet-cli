@@ -16,6 +16,12 @@ from typing import Any
 import torch
 from rapidfuzz import fuzz, process
 
+# Keep lhotse-generated ~/.lhotse under parakeet cache, not /root.
+PARAKEET_HOME_DEFAULT = Path(os.environ.get("PARAKEET_HOME", "/root/.parakeet")).resolve()
+LHOTSE_HOME = PARAKEET_HOME_DEFAULT / ".cache/home"
+LHOTSE_HOME.mkdir(parents=True, exist_ok=True)
+os.environ["HOME"] = str(LHOTSE_HOME)
+
 import nemo.collections.asr as nemo_asr
 
 
@@ -66,7 +72,15 @@ def read_request(raw_json: str) -> dict[str, Any]:
 
 
 def ensure_runtime_dirs(parakeet_home: Path) -> None:
-    for rel in [".cache/hf", ".cache/torch", ".cache/nemo", ".cache/pip", "output", "tmp"]:
+    for rel in [
+        ".cache/home",
+        ".cache/hf",
+        ".cache/torch",
+        ".cache/nemo",
+        ".cache/pip",
+        "output",
+        "tmp",
+    ]:
         (parakeet_home / rel).mkdir(parents=True, exist_ok=True)
 
 
