@@ -20,19 +20,31 @@ chmod +x scripts/install.sh scripts/parakeet scripts/transcribe-call.sh scripts/
 ./scripts/install.sh --cuda
 ```
 
+Install command launchers (direct bash calls):
+
+```bash
+/root/.parakeet/scripts/install-links
+```
+
+This installs:
+- `/usr/local/bin/parakeet`
+- `/usr/local/bin/parakeetd`
+- `/usr/local/bin/parakeet-terms`
+- `/usr/local/bin/parakeet-terms-sync`
+
 ## Usage
 
 Print transcript to stdout:
 
 ```bash
-/root/.parakeet/scripts/parakeet \
+parakeet \
   --input /path/to/audio.wav
 ```
 
 Machine-readable output for Rust/webhook integration:
 
 ```bash
-/root/.parakeet/scripts/parakeet \
+parakeet \
   --input /path/to/audio.wav \
   --emit json
 ```
@@ -41,13 +53,13 @@ Low-latency mode for repeated transcriptions:
 
 ```bash
 # start persistent model process once
-/root/.parakeet/scripts/parakeetd start
+parakeetd start
 
 # normal parakeet calls will auto-use daemon socket when available
-/root/.parakeet/scripts/parakeet --input /path/to/audio.wav --emit json
+parakeet --input /path/to/audio.wav --emit json
 
 # stop when done
-/root/.parakeet/scripts/parakeetd stop
+parakeetd stop
 ```
 
 Write markdown output file:

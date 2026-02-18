@@ -37,7 +37,9 @@ fi
 python -m pip install -r requirements.txt
 
 cargo build --release
+"$ROOT_DIR/scripts/install-links"
 
 echo "Installed Parakeet CLI in $ROOT_DIR"
 echo "Binary: $ROOT_DIR/target/release/parakeet-cli"
+echo "Launcher: /usr/local/bin/parakeet"
 echo "Torch mode: $MODE"

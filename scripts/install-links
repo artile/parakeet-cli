@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="/usr/local/bin"
+
+install -d "$BIN"
+ln -sfn "$ROOT_DIR/scripts/parakeet" "$BIN/parakeet"
+ln -sfn "$ROOT_DIR/scripts/parakeetd" "$BIN/parakeetd"
+ln -sfn "$ROOT_DIR/scripts/terms" "$BIN/parakeet-terms"
+ln -sfn "$ROOT_DIR/scripts/terms-sync" "$BIN/parakeet-terms-sync"
+
+echo "installed launchers:"
+echo "  $BIN/parakeet"
+echo "  $BIN/parakeetd"
+echo "  $BIN/parakeet-terms"
+echo "  $BIN/parakeet-terms-sync"

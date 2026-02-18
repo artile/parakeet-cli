@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 SOCK="$ROOT_DIR/tmp/parakeet.sock"
 PIDFILE="$ROOT_DIR/tmp/parakeetd.pid"
 LOGFILE="$ROOT_DIR/output/parakeetd.log"
