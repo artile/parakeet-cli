@@ -15,3 +15,5 @@ tmp/merged_vocab.txt
 *.ogg
 
 python/__pycache__/
+
+/parakeet

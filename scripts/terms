@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
-ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
-export PARAKEET_HOME="$ROOT_DIR"
-exec "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/python/terms_lib.py" "$@"
