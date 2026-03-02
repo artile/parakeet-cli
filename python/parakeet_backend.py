@@ -16,8 +16,16 @@ from typing import Any
 import torch
 from rapidfuzz import fuzz, process
 
+
+def detect_parakeet_home() -> Path:
+    env_home = os.environ.get("PARAKEET_HOME")
+    if env_home:
+        return Path(env_home).resolve()
+    return Path(__file__).resolve().parent.parent
+
+
 # Keep lhotse-generated ~/.lhotse under parakeet cache, not /root.
-PARAKEET_HOME_DEFAULT = Path(os.environ.get("PARAKEET_HOME", "/root/.parakeet")).resolve()
+PARAKEET_HOME_DEFAULT = detect_parakeet_home()
 LHOTSE_HOME = PARAKEET_HOME_DEFAULT / ".cache/home"
 LHOTSE_HOME.mkdir(parents=True, exist_ok=True)
 os.environ["HOME"] = str(LHOTSE_HOME)
@@ -49,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", help="JSON request from Rust CLI")
     parser.add_argument("--serve", action="store_true", help="Run persistent backend daemon")
-    parser.add_argument("--socket-path", default="/root/.parakeet/tmp/parakeet.sock")
+    parser.add_argument("--socket-path", default=str(PARAKEET_HOME_DEFAULT / "tmp/parakeet.sock"))
     parser.add_argument("--service-model", default="nvidia/parakeet-tdt-0.6b-v3")
     parser.add_argument("--service-device", default="auto")
     parser.add_argument("--verbose", action="store_true")
@@ -215,7 +223,7 @@ def transcribe(
 ) -> dict[str, Any]:
     patch_sampler_compat()
     started = time.perf_counter()
-    parakeet_home = Path(os.environ.get("PARAKEET_HOME", "/root/.parakeet")).resolve()
+    parakeet_home = PARAKEET_HOME_DEFAULT
     ensure_runtime_dirs(parakeet_home)
 
     input_path = Path(req["input"]).expanduser().resolve()
@@ -293,7 +301,7 @@ def transcribe(
 
 def serve(socket_path: Path, model_name: str, device: str, verbose: bool) -> int:
     patch_sampler_compat()
-    parakeet_home = Path(os.environ.get("PARAKEET_HOME", "/root/.parakeet")).resolve()
+    parakeet_home = PARAKEET_HOME_DEFAULT
     ensure_runtime_dirs(parakeet_home)
 
     model, resolved_device, load_sec = load_model(model_name, device, verbose)

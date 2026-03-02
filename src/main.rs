@@ -47,8 +47,8 @@ struct TranscribeCli {
     #[arg(long, value_enum, default_value_t = EmitMode::Text)]
     emit: EmitMode,
 
-    #[arg(long, default_value = "/root/.parakeet/tmp/parakeet.sock")]
-    daemon_socket: PathBuf,
+    #[arg(long)]
+    daemon_socket: Option<PathBuf>,
 
     #[arg(long, default_value_t = false)]
     no_daemon: bool,
@@ -76,36 +76,36 @@ struct DaemonCli {
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
     Start {
-        #[arg(long, default_value = "/root/.parakeet/tmp/parakeet.sock")]
-        socket: PathBuf,
-        #[arg(long, default_value = "/root/.parakeet/tmp/parakeetd.pid")]
-        pidfile: PathBuf,
-        #[arg(long, default_value = "/root/.parakeet/output/parakeetd.log")]
-        logfile: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        pidfile: Option<PathBuf>,
+        #[arg(long)]
+        logfile: Option<PathBuf>,
     },
     Stop {
-        #[arg(long, default_value = "/root/.parakeet/tmp/parakeetd.pid")]
-        pidfile: PathBuf,
-        #[arg(long, default_value = "/root/.parakeet/tmp/parakeet.sock")]
-        socket: PathBuf,
+        #[arg(long)]
+        pidfile: Option<PathBuf>,
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
     Status {
-        #[arg(long, default_value = "/root/.parakeet/tmp/parakeetd.pid")]
-        pidfile: PathBuf,
-        #[arg(long, default_value = "/root/.parakeet/tmp/parakeet.sock")]
-        socket: PathBuf,
-        #[arg(long, default_value = "/root/.parakeet/output/parakeetd.log")]
-        logfile: PathBuf,
+        #[arg(long)]
+        pidfile: Option<PathBuf>,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        logfile: Option<PathBuf>,
     },
     Logs {
-        #[arg(long, default_value = "/root/.parakeet/output/parakeetd.log")]
-        logfile: PathBuf,
+        #[arg(long)]
+        logfile: Option<PathBuf>,
         #[arg(long, default_value_t = 80)]
         lines: usize,
     },
     Serve {
-        #[arg(long, default_value = "/root/.parakeet/tmp/parakeet.sock")]
-        socket: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
 }
 
@@ -193,15 +193,30 @@ async fn run_daemon(daemon: DaemonCli) -> Result<()> {
             socket,
             pidfile,
             logfile,
-        } => daemon_start(&socket, &pidfile, &logfile),
-        DaemonCommand::Stop { pidfile, socket } => daemon_stop(&pidfile, &socket),
+        } => daemon_start(
+            &socket.unwrap_or_else(default_socket_path),
+            &pidfile.unwrap_or_else(default_pid_path),
+            &logfile.unwrap_or_else(default_log_path),
+        ),
+        DaemonCommand::Stop { pidfile, socket } => daemon_stop(
+            &pidfile.unwrap_or_else(default_pid_path),
+            &socket.unwrap_or_else(default_socket_path),
+        ),
         DaemonCommand::Status {
             pidfile,
             socket,
             logfile,
-        } => daemon_status(&pidfile, &socket, &logfile),
-        DaemonCommand::Logs { logfile, lines } => daemon_logs(&logfile, lines),
-        DaemonCommand::Serve { socket } => daemon_serve(&socket).await,
+        } => daemon_status(
+            &pidfile.unwrap_or_else(default_pid_path),
+            &socket.unwrap_or_else(default_socket_path),
+            &logfile.unwrap_or_else(default_log_path),
+        ),
+        DaemonCommand::Logs { logfile, lines } => {
+            daemon_logs(&logfile.unwrap_or_else(default_log_path), lines)
+        }
+        DaemonCommand::Serve { socket } => {
+            daemon_serve(&socket.unwrap_or_else(default_socket_path)).await
+        }
     }
 }
 
@@ -361,8 +376,9 @@ async fn run_transcribe(cli: TranscribeCli) -> Result<()> {
     }
     if !venv_python.exists() {
         bail!(
-            "python environment missing at {}. Bootstrap env/tools via: /root/.parakeet/install.sh",
+            "python environment missing at {}. Bootstrap env/tools via: {}/install.sh",
             venv_python.display(),
+            root_dir.display(),
         );
     }
     if !backend.exists() {
@@ -394,8 +410,12 @@ async fn run_transcribe(cli: TranscribeCli) -> Result<()> {
     };
     let json = serde_json::to_string(&request).context("serialize backend request")?;
 
+    let daemon_socket = cli
+        .daemon_socket
+        .as_deref()
+        .map_or_else(default_socket_path, PathBuf::from);
     if !cli.no_daemon
-        && let Ok(parsed) = try_daemon_request(&cli.daemon_socket, &json)
+        && let Ok(parsed) = try_daemon_request(&daemon_socket, &json)
     {
         emit_response(&cli, &parsed)?;
         return Ok(());
@@ -474,7 +494,26 @@ async fn run_transcribe(cli: TranscribeCli) -> Result<()> {
 fn parakeet_home() -> PathBuf {
     std::env::var("PARAKEET_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/root/.parakeet"))
+        .unwrap_or_else(|_| default_parakeet_home())
+}
+
+fn default_parakeet_home() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/root/TAO/Tools/parakeet"))
+}
+
+fn default_socket_path() -> PathBuf {
+    parakeet_home().join("tmp/parakeet.sock")
+}
+
+fn default_pid_path() -> PathBuf {
+    parakeet_home().join("tmp/parakeetd.pid")
+}
+
+fn default_log_path() -> PathBuf {
+    parakeet_home().join("output/parakeetd.log")
 }
 
 fn try_daemon_request(socket_path: &Path, request_json: &str) -> Result<BackendResponse> {

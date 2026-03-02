@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     add_stdin.add_argument("--channel", required=True)
 
     auto = sub.add_parser("ingest-auto", help="Ingest terms from configured channel sources")
-    auto.add_argument("--config", default="/root/.parakeet/terms/sources.json")
+    auto.add_argument("--config", default=str(root_dir() / "terms/sources.json"))
 
     build = sub.add_parser("build-vocab", help="Build vocabulary files for ASR")
     build.add_argument("--max-terms", type=int, default=300)
@@ -85,7 +85,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def root_dir() -> Path:
-    return Path(os.environ.get("PARAKEET_HOME", "/root/.parakeet")).resolve()
+    env_home = os.environ.get("PARAKEET_HOME")
+    if env_home:
+        return Path(env_home).resolve()
+    return Path(__file__).resolve().parent.parent
 
 
 def terms_dir() -> Path:

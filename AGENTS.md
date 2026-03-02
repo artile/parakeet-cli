@@ -4,19 +4,23 @@
 
 `parakeet` is the single Rust CLI binary for local transcription and daemon control.
 
-Project root: `/root/.parakeet`
+Project root: `/root/TAO/Tools/parakeet`
 
 ## Install
 
 Run once:
-- `/root/.parakeet/install.sh`
+- `/root/TAO/Tools/parakeet/install.sh`
 
 This builds `target/release/parakeet`, copies it to:
-- `/root/.parakeet/parakeet`
+- `/root/TAO/Tools/parakeet/parakeet`
 
 And installs symlinks:
-- `/usr/local/bin/parakeet` -> `/root/.parakeet/parakeet`
-- `/usr/local/bin/parakeetd` -> `/root/.parakeet/parakeet`
+- `/usr/local/bin/parakeet` -> `/root/TAO/Tools/parakeet/parakeet`
+- `/usr/local/bin/parakeetd` -> `/root/TAO/Tools/parakeet/parakeet`
+
+Runtime home resolution:
+- Uses `PARAKEET_HOME` when set.
+- Otherwise resolves from the installed binary/script location (project root).
 
 `parakeetd` works via executable-name aliasing (`argv[0]` => `daemon` mode).
 
