@@ -1,2 +1,11 @@
-nemo_toolkit[asr]>=2.0.0
+nemo_toolkit==2.7.0
+lightning==2.4.0
+transformers==4.57.6
+lhotse==1.32.2
+librosa==0.11.0
+datasets==4.7.0
+pyannote.metrics==4.0.0
+pyannote-database==6.1.1
+nv_one_logger_pytorch_lightning_integration==2.3.1
+sentencepiece==0.2.1
 rapidfuzz>=3.0.0

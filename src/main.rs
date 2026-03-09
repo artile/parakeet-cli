@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
         && Path::new(argv0)
             .file_name()
             .and_then(|s| s.to_str())
-            .is_some_and(|name| name == "parakeetd")
+            .is_some_and(|name| matches!(name, "parakeetd" | "paraketd"))
     {
         args.insert(1, "daemon".into());
     }
