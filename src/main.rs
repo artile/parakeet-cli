@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -228,7 +229,7 @@ async fn daemon_serve(socket: &Path) -> Result<()> {
     fs::create_dir_all(root_dir.join("tmp"))?;
     fs::create_dir_all(root_dir.join("output"))?;
 
-    let status = std::process::Command::new(&venv_python)
+    let err = std::process::Command::new(&venv_python)
         .arg(&backend)
         .arg("--serve")
         .arg("--socket-path")
@@ -239,14 +240,9 @@ async fn daemon_serve(socket: &Path) -> Result<()> {
         .env("TORCH_HOME", root_dir.join(".cache/torch"))
         .env("NEMO_HOME", root_dir.join(".cache/nemo"))
         .env("PIP_CACHE_DIR", root_dir.join(".cache/pip"))
-        .status()
-        .context("failed launching daemon backend")?;
+        .exec();
 
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("daemon backend exited with status: {status}")
-    }
+    Err(anyhow!(err)).context("failed launching daemon backend")
 }
 
 fn daemon_start(socket: &Path, pidfile: &Path, logfile: &Path) -> Result<()> {
@@ -321,12 +317,13 @@ fn daemon_stop(pidfile: &Path, socket: &Path) -> Result<()> {
 }
 
 fn daemon_status(pidfile: &Path, socket: &Path, logfile: &Path) -> Result<()> {
-    if is_pidfile_running(pidfile)? {
+    if is_pidfile_running(pidfile)? || is_socket_reachable(socket) {
         println!("parakeet daemon running");
         println!("socket: {}", socket.display());
         println!("log: {}", logfile.display());
         Ok(())
     } else {
+        let _ = fs::remove_file(pidfile);
         println!("parakeet daemon not running");
         bail!("not running")
     }
@@ -348,12 +345,40 @@ fn is_pidfile_running(pidfile: &Path) -> Result<bool> {
         return Ok(false);
     };
 
+    if is_zombie_pid(pid)? {
+        return Ok(false);
+    }
+
     let status = std::process::Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
         .status()
         .context("failed to probe pid")?;
     Ok(status.success())
+}
+
+fn is_zombie_pid(pid: u32) -> Result<bool> {
+    let proc_stat = format!("/proc/{pid}/stat");
+    let raw = match fs::read_to_string(&proc_stat) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err).with_context(|| format!("failed reading {proc_stat}")),
+    };
+
+    let Some(close_paren) = raw.rfind(')') else {
+        return Ok(false);
+    };
+    let rest = raw[close_paren + 1..].trim_start();
+    let mut parts = rest.split_whitespace();
+    let state = parts.next().unwrap_or_default();
+    Ok(state == "Z")
+}
+
+fn is_socket_reachable(socket: &Path) -> bool {
+    if !socket.exists() {
+        return false;
+    }
+    UnixStream::connect(socket).is_ok()
 }
 
 fn read_pid(pidfile: &Path) -> Result<Option<u32>> {

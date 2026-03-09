@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import errno
 import inspect
 import json
 import os
@@ -305,11 +306,6 @@ def serve(socket_path: Path, model_name: str, device: str, verbose: bool) -> int
     ensure_runtime_dirs(parakeet_home)
 
     model, resolved_device, load_sec = load_model(model_name, device, verbose)
-    print(
-        f"[parakeetd] ready socket={socket_path} model={model_name} device={resolved_device} load_sec={load_sec:.2f}",
-        file=sys.stderr,
-    )
-
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         if socket_path.exists():
@@ -320,6 +316,11 @@ def serve(socket_path: Path, model_name: str, device: str, verbose: bool) -> int
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(socket_path))
     server.listen(16)
+    print(
+        f"[parakeetd] ready socket={socket_path} model={model_name} device={resolved_device} load_sec={load_sec:.2f}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     while True:
         conn, _ = server.accept()
@@ -344,7 +345,11 @@ def serve(socket_path: Path, model_name: str, device: str, verbose: bool) -> int
                 conn.sendall((json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8"))
             except Exception as exc:
                 payload = {"error": str(exc)}
-                conn.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+                try:
+                    conn.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+                except OSError as send_exc:
+                    if send_exc.errno not in {errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN}:
+                        raise
 
 
 def main() -> int:
