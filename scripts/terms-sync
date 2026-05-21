@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+/root/TAO/Tools/parakeet/.venv/bin/python /root/TAO/Tools/parakeet/python/terms_lib.py rebuild

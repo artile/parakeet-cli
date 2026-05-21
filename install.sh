@@ -21,12 +21,13 @@ fi
 "$VENV_DIR/bin/python" -m pip install "${PIP_ARGS[@]}" --upgrade pip setuptools wheel
 
 if command -v nvidia-smi >/dev/null 2>&1; then
-  "$VENV_DIR/bin/python" -m pip install "${PIP_ARGS[@]}" "torch>=2.6.0"
+  "$VENV_DIR/bin/python" -m pip install "${PIP_ARGS[@]}" "torch==2.6.0" "torchaudio==2.6.0"
 else
   "$VENV_DIR/bin/python" -m pip install \
     "${PIP_ARGS[@]}" \
     --index-url https://download.pytorch.org/whl/cpu \
-    "torch==2.6.0+cpu"
+    "torch==2.6.0+cpu" \
+    "torchaudio==2.6.0+cpu"
 fi
 
 "$VENV_DIR/bin/python" -m pip install "${PIP_ARGS[@]}" -r "$ROOT_DIR/requirements.txt"

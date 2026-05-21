@@ -1,3 +1,5 @@
+mod multitalker;
+
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -8,6 +10,7 @@ use std::{collections::BTreeSet, fs};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use multitalker::run_multitalker;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -20,6 +23,9 @@ struct TranscribeCli {
 
     #[arg(long, short = 'o')]
     out: Option<PathBuf>,
+
+    #[arg(long)]
+    work_dir: Option<PathBuf>,
 
     #[arg(long)]
     model: Option<String>,
@@ -38,6 +44,18 @@ struct TranscribeCli {
 
     #[arg(long, default_value_t = false)]
     timestamps: bool,
+
+    #[arg(long, default_value_t = false)]
+    diarize: bool,
+
+    #[arg(long, value_enum, default_value_t = SpeakerEngine::Pyannote)]
+    speaker_engine: SpeakerEngine,
+
+    #[arg(long, default_value_t = false)]
+    identify_speakers: bool,
+
+    #[arg(long)]
+    speaker_profile_dir: Option<PathBuf>,
 
     #[arg(long, default_value_t = false)]
     no_fuzzy_vocab: bool,
@@ -66,12 +84,63 @@ struct RootCli {
 enum RootCommand {
     Transcribe(TranscribeCli),
     Daemon(DaemonCli),
+    Speaker(SpeakerCli),
 }
 
 #[derive(Debug, Parser)]
 struct DaemonCli {
     #[command(subcommand)]
     command: DaemonCommand,
+}
+
+#[derive(Debug, Parser)]
+struct SpeakerCli {
+    #[command(subcommand)]
+    command: SpeakerCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SpeakerCommand {
+    Enroll {
+        #[arg(long)]
+        name: String,
+        #[arg(long, short = 'i')]
+        input: PathBuf,
+        #[arg(long)]
+        profile_dir: Option<PathBuf>,
+        #[arg(long)]
+        start_sec: Option<f64>,
+        #[arg(long)]
+        end_sec: Option<f64>,
+        #[arg(long, default_value = "auto")]
+        device: String,
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
+    },
+    Identify {
+        #[arg(long, short = 'i')]
+        input: PathBuf,
+        #[arg(long)]
+        diarization: PathBuf,
+        #[arg(long)]
+        profile_dir: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        render_out: Option<PathBuf>,
+        #[arg(long)]
+        work_dir: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        #[arg(long, default_value_t = false)]
+        timestamps: bool,
+        #[arg(long, value_enum, default_value_t = EmitMode::Json)]
+        emit: EmitMode,
+        #[arg(long, default_value = "auto")]
+        device: String,
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -122,15 +191,25 @@ enum EmitMode {
     Json,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum SpeakerEngine {
+    Pyannote,
+    Multitalker,
+}
+
 #[derive(serde::Serialize)]
 struct BackendRequest<'a> {
     input: &'a Path,
     output: Option<&'a Path>,
+    work_dir: Option<&'a Path>,
     model: &'a str,
     device: &'a str,
     vocab: Option<&'a Path>,
     format: &'a str,
     timestamps: bool,
+    diarize: bool,
+    identify_speakers: bool,
+    speaker_profile_dir: Option<&'a Path>,
     fuzzy_vocab: bool,
     verbose: bool,
 }
@@ -144,6 +223,7 @@ struct BackendResponse {
     device: String,
     format: String,
     metrics: Option<BackendMetrics>,
+    diarization: Option<BackendDiarization>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -152,6 +232,82 @@ struct BackendMetrics {
     inference_sec: f64,
     total_sec: f64,
     audio_sec: Option<f64>,
+    diarization_sec: Option<f64>,
+    speaker_identification_sec: Option<f64>,
+    speaker_segments: Option<usize>,
+    identified_speakers: Option<usize>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct BackendDiarization {
+    model: String,
+    speaker_count: usize,
+    segment_count: usize,
+}
+
+#[derive(serde::Serialize)]
+struct SpeakerEnrollRequest<'a> {
+    input: &'a Path,
+    name: &'a str,
+    profile_dir: &'a Path,
+    start_sec: Option<f64>,
+    end_sec: Option<f64>,
+    device: &'a str,
+    verbose: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct SpeakerEnrollResponse {
+    name: String,
+    profile_path: String,
+    sample_count: usize,
+    duration_sec: f64,
+    embedding_model: String,
+}
+
+#[derive(serde::Serialize)]
+struct SpeakerIdentifyRequest<'a> {
+    input: &'a Path,
+    diarization: &'a Path,
+    profile_dir: &'a Path,
+    output: Option<&'a Path>,
+    render_output: Option<&'a Path>,
+    work_dir: Option<&'a Path>,
+    format: &'a str,
+    timestamps: bool,
+    device: &'a str,
+    verbose: bool,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct SpeakerIdentifyResponse {
+    input: String,
+    diarization_source: String,
+    output_path: Option<String>,
+    rendered_path: Option<String>,
+    transcript: Option<String>,
+    embedding_model: String,
+    metrics: SpeakerIdentifyMetrics,
+    assignments: Vec<serde_json::Value>,
+    segments: Vec<SpeakerIdentifiedSegment>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct SpeakerIdentifyMetrics {
+    identification_sec: f64,
+    audio_sec: Option<f64>,
+    cluster_count: usize,
+    matched_speakers: usize,
+    segment_count: usize,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct SpeakerIdentifiedSegment {
+    speaker: String,
+    speaker_original: Option<String>,
+    start_sec: f64,
+    end_sec: f64,
+    text: Option<String>,
 }
 
 #[tokio::main]
@@ -175,6 +331,10 @@ async fn main() -> Result<()> {
             let root = RootCli::parse_from(args);
             return run_root(root).await;
         }
+        if args[1] == "speaker" {
+            let root = RootCli::parse_from(args);
+            return run_root(root).await;
+        }
     }
 
     let cli = TranscribeCli::parse_from(args);
@@ -185,6 +345,7 @@ async fn run_root(root: RootCli) -> Result<()> {
     match root.command {
         RootCommand::Transcribe(cli) => run_transcribe(cli).await,
         RootCommand::Daemon(daemon) => run_daemon(daemon).await,
+        RootCommand::Speaker(speaker) => run_speaker(speaker).await,
     }
 }
 
@@ -396,6 +557,13 @@ async fn run_transcribe(cli: TranscribeCli) -> Result<()> {
     let venv_python = root_dir.join(".venv/bin/python");
     let backend = root_dir.join("python/parakeet_backend.py");
 
+    if cli.identify_speakers && !cli.diarize {
+        bail!("--identify-speakers requires --diarize");
+    }
+    if cli.identify_speakers && cli.speaker_engine != SpeakerEngine::Pyannote {
+        bail!("--identify-speakers is currently supported only with --speaker-engine pyannote");
+    }
+
     if !cli.input.exists() {
         bail!("input does not exist: {}", cli.input.display());
     }
@@ -414,25 +582,50 @@ async fn run_transcribe(cli: TranscribeCli) -> Result<()> {
         OutputFormat::Text => "text",
         OutputFormat::Md => "md",
     };
+    let speaker_profile_dir = if cli.identify_speakers {
+        Some(
+            cli.speaker_profile_dir
+                .clone()
+                .unwrap_or_else(default_speaker_profile_dir),
+        )
+    } else {
+        cli.speaker_profile_dir.clone()
+    };
     let model_name = cli
         .model
         .as_deref()
         .unwrap_or("nvidia/parakeet-tdt-0.6b-v3");
 
-    let merged_vocab_path = prepare_vocab_file(&root_dir, cli.vocab.as_deref(), !cli.no_library)
-        .context("failed preparing vocabulary file")?;
+    let merged_vocab_path = prepare_vocab_file(
+        &root_dir,
+        cli.vocab.as_deref(),
+        !cli.no_library,
+        cli.work_dir.as_deref(),
+    )
+    .context("failed preparing vocabulary file")?;
 
     let request = BackendRequest {
         input: &cli.input,
         output: cli.out.as_deref(),
+        work_dir: cli.work_dir.as_deref(),
         model: model_name,
         device: &cli.device,
         vocab: merged_vocab_path.as_deref(),
         format: output_format,
         timestamps: cli.timestamps,
+        diarize: cli.diarize,
+        identify_speakers: cli.identify_speakers,
+        speaker_profile_dir: speaker_profile_dir.as_deref(),
         fuzzy_vocab: !cli.no_fuzzy_vocab,
         verbose: cli.verbose,
     };
+
+    if cli.diarize && cli.speaker_engine == SpeakerEngine::Multitalker {
+        let parsed = run_multitalker(&cli, &root_dir)?;
+        emit_response(&cli, &parsed)?;
+        return Ok(());
+    }
+
     let json = serde_json::to_string(&request).context("serialize backend request")?;
 
     let daemon_socket = cli
@@ -440,6 +633,7 @@ async fn run_transcribe(cli: TranscribeCli) -> Result<()> {
         .as_deref()
         .map_or_else(default_socket_path, PathBuf::from);
     if !cli.no_daemon
+        && !cli.diarize
         && let Ok(parsed) = try_daemon_request(&daemon_socket, &json)
     {
         emit_response(&cli, &parsed)?;
@@ -516,6 +710,176 @@ async fn run_transcribe(cli: TranscribeCli) -> Result<()> {
     Ok(())
 }
 
+async fn run_speaker(cli: SpeakerCli) -> Result<()> {
+    let root_dir = parakeet_home();
+    let venv_python = root_dir.join(".venv/bin/python");
+    let backend = root_dir.join("python/parakeet_backend.py");
+
+    match cli.command {
+        SpeakerCommand::Enroll {
+            name,
+            input,
+            profile_dir,
+            start_sec,
+            end_sec,
+            device,
+            verbose,
+        } => {
+            if !input.exists() {
+                bail!("input does not exist: {}", input.display());
+            }
+            if !venv_python.exists() {
+                bail!(
+                    "python environment missing at {}. Bootstrap env/tools via: {}/install.sh",
+                    venv_python.display(),
+                    root_dir.display(),
+                );
+            }
+            if !backend.exists() {
+                bail!("backend script not found: {}", backend.display());
+            }
+
+            let profile_dir = profile_dir.unwrap_or_else(default_speaker_profile_dir);
+            let request = SpeakerEnrollRequest {
+                input: &input,
+                name: &name,
+                profile_dir: &profile_dir,
+                start_sec,
+                end_sec,
+                device: &device,
+                verbose,
+            };
+            let json =
+                serde_json::to_string(&request).context("serialize speaker enroll request")?;
+
+            let output = Command::new(&venv_python)
+                .arg(&backend)
+                .arg("--speaker-enroll-json")
+                .arg(json)
+                .env("PARAKEET_HOME", &root_dir)
+                .env("HF_HOME", root_dir.join(".cache/hf"))
+                .env("TRANSFORMERS_CACHE", root_dir.join(".cache/hf"))
+                .env("TORCH_HOME", root_dir.join(".cache/torch"))
+                .env("NEMO_HOME", root_dir.join(".cache/nemo"))
+                .env("PIP_CACHE_DIR", root_dir.join(".cache/pip"))
+                .output()
+                .await
+                .context("failed to launch speaker enrollment backend")?;
+
+            if !output.status.success() {
+                bail!(
+                    "speaker enrollment failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+
+            let stdout = String::from_utf8(output.stdout)
+                .context("invalid UTF-8 from speaker enrollment")?;
+            let json_line = stdout
+                .lines()
+                .rev()
+                .find(|line| line.trim_start().starts_with('{'))
+                .ok_or_else(|| anyhow!("speaker enrollment backend did not return JSON output"))?;
+            let response: SpeakerEnrollResponse = serde_json::from_str(json_line.trim())
+                .context("failed to parse speaker enrollment response")?;
+
+            println!("speaker enrolled");
+            println!("name: {}", response.name);
+            println!("profile: {}", response.profile_path);
+            println!("samples: {}", response.sample_count);
+            println!("duration_sec: {:.2}", response.duration_sec);
+            println!("embedding_model: {}", response.embedding_model);
+            Ok(())
+        }
+        SpeakerCommand::Identify {
+            input,
+            diarization,
+            profile_dir,
+            out,
+            render_out,
+            work_dir,
+            format,
+            timestamps,
+            emit,
+            device,
+            verbose,
+        } => {
+            if !input.exists() {
+                bail!("input does not exist: {}", input.display());
+            }
+            if !diarization.exists() {
+                bail!(
+                    "diarization input does not exist: {}",
+                    diarization.display()
+                );
+            }
+            if !venv_python.exists() {
+                bail!(
+                    "python environment missing at {}. Bootstrap env/tools via: {}/install.sh",
+                    venv_python.display(),
+                    root_dir.display(),
+                );
+            }
+            if !backend.exists() {
+                bail!("backend script not found: {}", backend.display());
+            }
+
+            let profile_dir = profile_dir.unwrap_or_else(default_speaker_profile_dir);
+            let output_format = match format {
+                OutputFormat::Text => "text",
+                OutputFormat::Md => "md",
+            };
+            let request = SpeakerIdentifyRequest {
+                input: &input,
+                diarization: &diarization,
+                profile_dir: &profile_dir,
+                output: out.as_deref(),
+                render_output: render_out.as_deref(),
+                work_dir: work_dir.as_deref(),
+                format: output_format,
+                timestamps,
+                device: &device,
+                verbose,
+            };
+            let json =
+                serde_json::to_string(&request).context("serialize speaker identify request")?;
+
+            let output = Command::new(&venv_python)
+                .arg(&backend)
+                .arg("--speaker-identify-json")
+                .arg(json)
+                .env("PARAKEET_HOME", &root_dir)
+                .env("HF_HOME", root_dir.join(".cache/hf"))
+                .env("TRANSFORMERS_CACHE", root_dir.join(".cache/hf"))
+                .env("TORCH_HOME", root_dir.join(".cache/torch"))
+                .env("NEMO_HOME", root_dir.join(".cache/nemo"))
+                .env("PIP_CACHE_DIR", root_dir.join(".cache/pip"))
+                .output()
+                .await
+                .context("failed to launch speaker identify backend")?;
+
+            if !output.status.success() {
+                bail!(
+                    "speaker identification failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+
+            let stdout =
+                String::from_utf8(output.stdout).context("invalid UTF-8 from speaker identify")?;
+            let json_line = stdout
+                .lines()
+                .rev()
+                .find(|line| line.trim_start().starts_with('{'))
+                .ok_or_else(|| anyhow!("speaker identify backend did not return JSON output"))?;
+            let response: SpeakerIdentifyResponse = serde_json::from_str(json_line.trim())
+                .context("failed to parse speaker identify response")?;
+
+            emit_speaker_identify_response(emit, verbose, &response)
+        }
+    }
+}
+
 fn parakeet_home() -> PathBuf {
     std::env::var("PARAKEET_HOME")
         .map(PathBuf::from)
@@ -525,7 +889,30 @@ fn parakeet_home() -> PathBuf {
 fn default_parakeet_home() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|path| path.parent().map(PathBuf::from))
+        .map(|path| {
+            let parent = path.parent().map(PathBuf::from);
+            let is_target_bin = path
+                .parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| matches!(name, "debug" | "release"))
+                && path
+                    .parent()
+                    .and_then(|dir| dir.parent())
+                    .and_then(|dir| dir.file_name())
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == "target");
+            if is_target_bin {
+                path.parent()
+                    .and_then(|dir| dir.parent())
+                    .and_then(|dir| dir.parent())
+                    .map(PathBuf::from)
+                    .or(parent)
+            } else {
+                parent
+            }
+        })
+        .flatten()
         .unwrap_or_else(|| PathBuf::from("/root/TAO/Tools/parakeet"))
 }
 
@@ -539,6 +926,10 @@ fn default_pid_path() -> PathBuf {
 
 fn default_log_path() -> PathBuf {
     parakeet_home().join("output/parakeetd.log")
+}
+
+fn default_speaker_profile_dir() -> PathBuf {
+    parakeet_home().join("profiles/speakers")
 }
 
 fn try_daemon_request(socket_path: &Path, request_json: &str) -> Result<BackendResponse> {
@@ -586,10 +977,53 @@ fn emit_response(cli: &TranscribeCli, parsed: &BackendResponse) -> Result<()> {
     Ok(())
 }
 
+fn emit_speaker_identify_response(
+    emit: EmitMode,
+    verbose: bool,
+    response: &SpeakerIdentifyResponse,
+) -> Result<()> {
+    match emit {
+        EmitMode::Json => {
+            let json = serde_json::to_string_pretty(response)
+                .context("serialize speaker identify JSON")?;
+            println!("{json}");
+        }
+        EmitMode::Text => {
+            if let Some(transcript) = &response.transcript {
+                println!("{transcript}");
+            } else {
+                println!("speaker identification completed");
+                println!("clusters: {}", response.metrics.cluster_count);
+                println!("matched: {}", response.metrics.matched_speakers);
+                println!("segments: {}", response.metrics.segment_count);
+                if let Some(path) = &response.output_path {
+                    println!("output: {path}");
+                }
+            }
+            if verbose {
+                eprintln!(
+                    "[speaker identify metrics] identify={:.2}s audio={} clusters={} matched={} segments={}",
+                    response.metrics.identification_sec,
+                    response
+                        .metrics
+                        .audio_sec
+                        .map(|x| format!("{x:.2}s"))
+                        .unwrap_or_else(|| "n/a".to_string()),
+                    response.metrics.cluster_count,
+                    response.metrics.matched_speakers,
+                    response.metrics.segment_count,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn prepare_vocab_file(
     root_dir: &Path,
     user_vocab: Option<&Path>,
     use_library: bool,
+    work_dir: Option<&Path>,
 ) -> Result<Option<PathBuf>> {
     let mut vocab_files = Vec::new();
     if use_library {
@@ -621,7 +1055,9 @@ fn prepare_vocab_file(
         }
     }
 
-    let tmp_dir = root_dir.join("tmp");
+    let tmp_dir = work_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root_dir.join("tmp"));
     fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed creating tmp dir: {}", tmp_dir.display()))?;
     let merged_path = tmp_dir.join("merged_vocab.txt");

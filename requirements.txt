@@ -9,3 +9,4 @@ pyannote-database==6.1.1
 nv_one_logger_pytorch_lightning_integration==2.3.1
 sentencepiece==0.2.1
 rapidfuzz>=3.0.0
+pyannote.audio>=3.1,<4.0
